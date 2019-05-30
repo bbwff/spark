@@ -2017,12 +2017,12 @@ Apart from these, the following properties are also available, and may be useful
 
             <br />When <code>spark.ssl.enabled</code> is configured, <code>spark.ssl.protocol</code>
             is required.
-
+    
             <br />All the SSL settings like <code>spark.ssl.xxx</code> where <code>xxx</code> is a
             particular configuration property, denote the global configuration for all the supported
             protocols. In order to override the global configuration for the particular protocol,
             the properties must be overwritten in the protocol-specific namespace.
-
+    
             <br />Use <code>spark.ssl.YYY.XXX</code> settings to overwrite the global configuration for
             particular protocol denoted by <code>YYY</code>. Example values for <code>YYY</code>
             include <code>fs</code>, <code>ui</code>, <code>standalone</code>, and
@@ -2035,11 +2035,11 @@ Apart from these, the following properties are also available, and may be useful
         <td>None</td>
         <td>
             The port where the SSL service will listen on.
-
+    
             <br />The port must be defined within a namespace configuration; see
             <a href="security.html#ssl-configuration">SSL Configuration</a> for the available
             namespaces.
-
+    
             <br />When not set, the SSL port will be derived from the non-SSL port for the
             same service. A value of "0" will make the service bind to an ephemeral port.
         </td>

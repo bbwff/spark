@@ -525,6 +525,12 @@ package object config {
       .checkValue(v => v > 0, "The threshold should be positive.")
       .createWithDefault(10000000)
 
+  private[spark] val SHUFFLE_FETCH_SPLIT_ENABLED =
+    ConfigBuilder("spark.shuffle.fetch.split")
+      .doc("Whether split large partition blocks to enable transfer oversize shuffle blocks.")
+      .booleanConf
+      .createWithDefault(false)
+
   private[spark] val CREDENTIALS_RENEWAL_INTERVAL_RATIO =
     ConfigBuilder("spark.security.credentials.renewalRatio")
       .doc("Ratio of the credential's expiration time when Spark should fetch new credentials.")

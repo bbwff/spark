@@ -33,6 +33,7 @@ import org.apache.hadoop.mapreduce.lib.input.{TextInputFormat => NewTextInputFor
 import org.scalatest.Matchers._
 import org.scalatest.concurrent.Eventually
 
+import org.apache.spark.internal.config
 import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart, SparkListenerTaskEnd, SparkListenerTaskStart}
 import org.apache.spark.util.{ThreadUtils, Utils}
 
@@ -632,6 +633,20 @@ class SparkContextSuite extends SparkFunSuite with LocalSparkContext with Eventu
     val sc = new SparkContext(new SparkConf().setMaster("local").setAppName("test")
       .set("spark.ui.port", "-1"))
     assert(sc.ui === None)
+    sc.stop()
+  }
+
+  test("NESPARK-210: Split large partitions to transfer the oversize shuffle block") {
+    val sc = new SparkContext(new SparkConf().setMaster("local").setAppName("test")
+    .set(config.SHUFFLE_FETCH_SPLIT_ENABLED.key, "true"))
+    val num = 10000
+    val collect = sc.parallelize(0 until num, 300)
+      .map((_, 1))
+      .reduceByKey(_ + _)
+      .collect()
+    val expected = (0 until num).map((_, 1))
+    assert(collect.length === num)
+    assert(!collect.exists(v => !expected.contains(v)))
     sc.stop()
   }
 }

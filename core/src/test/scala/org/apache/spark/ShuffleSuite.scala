@@ -72,7 +72,7 @@ abstract class ShuffleSuite extends SparkFunSuite with Matchers with LocalSparkC
     // All blocks must have non-zero size
     (0 until NUM_BLOCKS).foreach { id =>
       val statuses = SparkEnv.get.mapOutputTracker.getMapSizesByExecutorId(shuffleId, id)
-      assert(statuses.forall(_._2.forall(blockIdSizePair => blockIdSizePair._2 > 0)))
+      assert(statuses.forall(_._2.forall(blockIdSizePair => blockIdSizePair._2._1 > 0)))
     }
   }
 
@@ -113,7 +113,7 @@ abstract class ShuffleSuite extends SparkFunSuite with Matchers with LocalSparkC
       val statuses = SparkEnv.get.mapOutputTracker.getMapSizesByExecutorId(shuffleId, id)
       statuses.flatMap(_._2.map(_._2))
     }
-    val nonEmptyBlocks = blockSizes.filter(x => x > 0)
+    val nonEmptyBlocks = blockSizes.filter(x => x._1 > 0)
 
     // We should have at most 4 non-zero sized partitions
     assert(nonEmptyBlocks.size <= 4)
@@ -138,7 +138,7 @@ abstract class ShuffleSuite extends SparkFunSuite with Matchers with LocalSparkC
       val statuses = SparkEnv.get.mapOutputTracker.getMapSizesByExecutorId(shuffleId, id)
       statuses.flatMap(_._2.map(_._2))
     }
-    val nonEmptyBlocks = blockSizes.filter(x => x > 0)
+    val nonEmptyBlocks = blockSizes.filter(x => x._1 > 0)
 
     // We should have at most 4 non-zero sized partitions
     assert(nonEmptyBlocks.size <= 4)

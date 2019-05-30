@@ -197,41 +197,48 @@ public class ExternalShuffleBlockHandler extends RpcHandler {
     private final String execId;
     private final int shuffleId;
     // An array containing mapId and reduceId pairs.
-    private final int[] mapIdAndReduceIds;
+    private final int[] mapIdAndReduceIdSegmentIds;
+    private boolean shuffleFetchSplit = false;
 
     ManagedBufferIterator(String appId, String execId, String[] blockIds) {
       this.appId = appId;
       this.execId = execId;
       String[] blockId0Parts = blockIds[0].split("_");
-      if (blockId0Parts.length != 4 || !blockId0Parts[0].equals("shuffle")) {
+      if (blockId0Parts.length == 5 && blockId0Parts[0].equals("shuffle")) {
+        shuffleFetchSplit = true;
+      } else if (blockId0Parts.length != 4 || !blockId0Parts[0].equals("shuffle")) {
         throw new IllegalArgumentException("Unexpected shuffle block id format: " + blockIds[0]);
       }
       this.shuffleId = Integer.parseInt(blockId0Parts[1]);
-      mapIdAndReduceIds = new int[2 * blockIds.length];
+      mapIdAndReduceIdSegmentIds = new int[3 * blockIds.length];
       for (int i = 0; i < blockIds.length; i++) {
         String[] blockIdParts = blockIds[i].split("_");
-        if (blockIdParts.length != 4 || !blockIdParts[0].equals("shuffle")) {
+        if (blockIdParts.length != (shuffleFetchSplit ? 5 : 4) || !blockIdParts[0].equals("shuffle")) {
           throw new IllegalArgumentException("Unexpected shuffle block id format: " + blockIds[i]);
         }
         if (Integer.parseInt(blockIdParts[1]) != shuffleId) {
           throw new IllegalArgumentException("Expected shuffleId=" + shuffleId +
             ", got:" + blockIds[i]);
         }
-        mapIdAndReduceIds[2 * i] = Integer.parseInt(blockIdParts[2]);
-        mapIdAndReduceIds[2 * i + 1] = Integer.parseInt(blockIdParts[3]);
+        mapIdAndReduceIdSegmentIds[3 * i] = Integer.parseInt(blockIdParts[2]);
+        mapIdAndReduceIdSegmentIds[3 * i + 1] = Integer.parseInt(blockIdParts[3]);
+        mapIdAndReduceIdSegmentIds[3 * i + 2] = shuffleFetchSplit ? Integer.parseInt(blockIdParts[4]) : 1;
       }
     }
 
     @Override
     public boolean hasNext() {
-      return index < mapIdAndReduceIds.length;
+      return index < mapIdAndReduceIdSegmentIds.length;
     }
 
     @Override
     public ManagedBuffer next() {
-      final ManagedBuffer block = blockManager.getBlockData(appId, execId, shuffleId,
-        mapIdAndReduceIds[index], mapIdAndReduceIds[index + 1]);
-      index += 2;
+      final ManagedBuffer block = shuffleFetchSplit ?
+              blockManager.getBlockSegmentData(appId, execId, shuffleId, mapIdAndReduceIdSegmentIds[index],
+          mapIdAndReduceIdSegmentIds[index + 1], mapIdAndReduceIdSegmentIds[index + 2]) :
+              blockManager.getBlockData(appId, execId, shuffleId, mapIdAndReduceIdSegmentIds[index],
+          mapIdAndReduceIdSegmentIds[index + 1]);
+      index += 3;
       metrics.blockTransferRateBytes.mark(block != null ? block.size() : 0);
       return block;
     }
