@@ -128,6 +128,18 @@ public class ExternalBlockStoreClient extends BlockStoreClient {
     }
   }
 
+  public ByteBuffer queryExecutorStatuses(
+      String host,
+      int port,
+      String[] execIds) throws IOException, InterruptedException{
+    checkInit();
+    logger.debug("Query executor statuses in External shuffle service from {}:{}", host, port);
+    TransportClient client = clientFactory.createClient(host, port);
+    ByteBuffer queryExecutorStatusesMsg = new AreExecutorsRegistered(appId, execIds).toByteBuffer();
+    int timeout = conf.connectionTimeoutMs() + conf.ioRetryWaitTimeMs();
+    return client.sendRpcSync(queryExecutorStatusesMsg, timeout);
+  }
+
   @Override
   public MetricSet shuffleMetrics() {
     checkInit();
