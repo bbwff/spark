@@ -74,102 +74,10 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
     }.head
   }
 
-  test("drop database") {
-    val sql1 = "DROP DATABASE IF EXISTS database_name RESTRICT"
-    val sql2 = "DROP DATABASE IF EXISTS database_name CASCADE"
-    val sql3 = "DROP SCHEMA IF EXISTS database_name RESTRICT"
-    val sql4 = "DROP SCHEMA IF EXISTS database_name CASCADE"
-    // The default is restrict=true
-    val sql5 = "DROP DATABASE IF EXISTS database_name"
-    // The default is ifExists=false
-    val sql6 = "DROP DATABASE database_name"
-    val sql7 = "DROP DATABASE database_name CASCADE"
-
-    val parsed1 = parser.parsePlan(sql1)
-    val parsed2 = parser.parsePlan(sql2)
-    val parsed3 = parser.parsePlan(sql3)
-    val parsed4 = parser.parsePlan(sql4)
-    val parsed5 = parser.parsePlan(sql5)
-    val parsed6 = parser.parsePlan(sql6)
-    val parsed7 = parser.parsePlan(sql7)
-
-    val expected1 = DropDatabaseCommand(
-      "database_name",
-      ifExists = true,
-      cascade = false)
-    val expected2 = DropDatabaseCommand(
-      "database_name",
-      ifExists = true,
-      cascade = true)
-    val expected3 = DropDatabaseCommand(
-      "database_name",
-      ifExists = false,
-      cascade = false)
-    val expected4 = DropDatabaseCommand(
-      "database_name",
-      ifExists = false,
-      cascade = true)
-
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
-    comparePlans(parsed3, expected1)
-    comparePlans(parsed4, expected2)
-    comparePlans(parsed5, expected1)
-    comparePlans(parsed6, expected3)
-    comparePlans(parsed7, expected4)
-  }
-
-  test("alter database set dbproperties") {
-    // ALTER (DATABASE|SCHEMA) database_name SET DBPROPERTIES (property_name=property_value, ...)
-    val sql1 = "ALTER DATABASE database_name SET DBPROPERTIES ('a'='a', 'b'='b', 'c'='c')"
-    val sql2 = "ALTER SCHEMA database_name SET DBPROPERTIES ('a'='a')"
-
-    val parsed1 = parser.parsePlan(sql1)
-    val parsed2 = parser.parsePlan(sql2)
-
-    val expected1 = AlterDatabasePropertiesCommand(
-      "database_name",
-      Map("a" -> "a", "b" -> "b", "c" -> "c"))
-    val expected2 = AlterDatabasePropertiesCommand(
-      "database_name",
-      Map("a" -> "a"))
-
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
-  }
-
   test("alter database - property values must be set") {
     assertUnsupported(
       sql = "ALTER DATABASE my_db SET DBPROPERTIES('key_without_value', 'key_with_value'='x')",
       containsThesePhrases = Seq("key_without_value"))
-  }
-
-  test("alter database set location") {
-    // ALTER (DATABASE|SCHEMA) database_name SET LOCATION
-    val sql1 = "ALTER DATABASE database_name SET LOCATION '/home/user/db'"
-    val parsed1 = parser.parsePlan(sql1)
-
-    val expected1 = AlterDatabaseSetLocationCommand("database_name", "/home/user/db")
-    comparePlans(parsed1, expected1)
-  }
-
-  test("describe database") {
-    // DESCRIBE DATABASE [EXTENDED] db_name;
-    val sql1 = "DESCRIBE DATABASE EXTENDED db_name"
-    val sql2 = "DESCRIBE DATABASE db_name"
-
-    val parsed1 = parser.parsePlan(sql1)
-    val parsed2 = parser.parsePlan(sql2)
-
-    val expected1 = DescribeDatabaseCommand(
-      "db_name",
-      extended = true)
-    val expected2 = DescribeDatabaseCommand(
-      "db_name",
-      extended = false)
-
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
   }
 
   test("create function") {
@@ -465,32 +373,6 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
       "Directory path and 'path' in OPTIONS should be specified one, but not both"))
   }
 
-  // ALTER TABLE table_name RENAME TO new_table_name;
-  // ALTER VIEW view_name RENAME TO new_view_name;
-  test("alter table/view: rename table/view") {
-    val sql_table = "ALTER TABLE table_name RENAME TO new_table_name"
-    val sql_view = sql_table.replace("TABLE", "VIEW")
-    val parsed_table = parser.parsePlan(sql_table)
-    val parsed_view = parser.parsePlan(sql_view)
-    val expected_table = AlterTableRenameCommand(
-      TableIdentifier("table_name"),
-      TableIdentifier("new_table_name"),
-      isView = false)
-    val expected_view = AlterTableRenameCommand(
-      TableIdentifier("table_name"),
-      TableIdentifier("new_table_name"),
-      isView = true)
-    comparePlans(parsed_table, expected_table)
-    comparePlans(parsed_view, expected_view)
-  }
-
-  test("alter table: rename table with database") {
-    val query = "ALTER TABLE db1.tbl RENAME TO db1.tbl2"
-    val plan = parseAs[AlterTableRenameCommand](query)
-    assert(plan.oldName == TableIdentifier("tbl", Some("db1")))
-    assert(plan.newName == TableIdentifier("tbl2", Some("db1")))
-  }
-
   test("alter table - property values must be set") {
     assertUnsupported(
       sql = "ALTER TABLE my_tab SET TBLPROPERTIES('key_without_value', 'key_with_value'='x')",
@@ -503,126 +385,11 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
       containsThesePhrases = Seq("key_with_value"))
   }
 
-  test("alter table: SerDe properties") {
-    val sql1 = "ALTER TABLE table_name SET SERDE 'org.apache.class'"
-    val sql2 =
-      """
-       |ALTER TABLE table_name SET SERDE 'org.apache.class'
-       |WITH SERDEPROPERTIES ('columns'='foo,bar', 'field.delim' = ',')
-      """.stripMargin
-    val sql3 =
-      """
-       |ALTER TABLE table_name SET SERDEPROPERTIES ('columns'='foo,bar',
-       |'field.delim' = ',')
-      """.stripMargin
-    val sql4 =
-      """
-       |ALTER TABLE table_name PARTITION (test=1, dt='2008-08-08',
-       |country='us') SET SERDE 'org.apache.class' WITH SERDEPROPERTIES ('columns'='foo,bar',
-       |'field.delim' = ',')
-      """.stripMargin
-    val sql5 =
-      """
-       |ALTER TABLE table_name PARTITION (test=1, dt='2008-08-08',
-       |country='us') SET SERDEPROPERTIES ('columns'='foo,bar', 'field.delim' = ',')
-      """.stripMargin
-    val parsed1 = parser.parsePlan(sql1)
-    val parsed2 = parser.parsePlan(sql2)
-    val parsed3 = parser.parsePlan(sql3)
-    val parsed4 = parser.parsePlan(sql4)
-    val parsed5 = parser.parsePlan(sql5)
-    val tableIdent = TableIdentifier("table_name", None)
-    val expected1 = AlterTableSerDePropertiesCommand(
-      tableIdent, Some("org.apache.class"), None, None)
-    val expected2 = AlterTableSerDePropertiesCommand(
-      tableIdent,
-      Some("org.apache.class"),
-      Some(Map("columns" -> "foo,bar", "field.delim" -> ",")),
-      None)
-    val expected3 = AlterTableSerDePropertiesCommand(
-      tableIdent, None, Some(Map("columns" -> "foo,bar", "field.delim" -> ",")), None)
-    val expected4 = AlterTableSerDePropertiesCommand(
-      tableIdent,
-      Some("org.apache.class"),
-      Some(Map("columns" -> "foo,bar", "field.delim" -> ",")),
-      Some(Map("test" -> "1", "dt" -> "2008-08-08", "country" -> "us")))
-    val expected5 = AlterTableSerDePropertiesCommand(
-      tableIdent,
-      None,
-      Some(Map("columns" -> "foo,bar", "field.delim" -> ",")),
-      Some(Map("test" -> "1", "dt" -> "2008-08-08", "country" -> "us")))
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
-    comparePlans(parsed3, expected3)
-    comparePlans(parsed4, expected4)
-    comparePlans(parsed5, expected5)
-  }
-
   test("alter table - SerDe property values must be set") {
     assertUnsupported(
       sql = "ALTER TABLE my_tab SET SERDE 'serde' " +
         "WITH SERDEPROPERTIES('key_without_value', 'key_with_value'='x')",
       containsThesePhrases = Seq("key_without_value"))
-  }
-
-  // ALTER TABLE table_name ADD [IF NOT EXISTS] PARTITION partition_spec
-  // [LOCATION 'location1'] partition_spec [LOCATION 'location2'] ...;
-  test("alter table: add partition") {
-    val sql1 =
-      """
-       |ALTER TABLE table_name ADD IF NOT EXISTS PARTITION
-       |(dt='2008-08-08', country='us') LOCATION 'location1' PARTITION
-       |(dt='2009-09-09', country='uk')
-      """.stripMargin
-    val sql2 = "ALTER TABLE table_name ADD PARTITION (dt='2008-08-08') LOCATION 'loc'"
-
-    val parsed1 = parser.parsePlan(sql1)
-    val parsed2 = parser.parsePlan(sql2)
-
-    val expected1 = AlterTableAddPartitionCommand(
-      TableIdentifier("table_name", None),
-      Seq(
-        (Map("dt" -> "2008-08-08", "country" -> "us"), Some("location1")),
-        (Map("dt" -> "2009-09-09", "country" -> "uk"), None)),
-      ifNotExists = true)
-    val expected2 = AlterTableAddPartitionCommand(
-      TableIdentifier("table_name", None),
-      Seq((Map("dt" -> "2008-08-08"), Some("loc"))),
-      ifNotExists = false)
-
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
-  }
-
-  test("alter table: recover partitions") {
-    val sql = "ALTER TABLE table_name RECOVER PARTITIONS"
-    val parsed = parser.parsePlan(sql)
-    val expected = AlterTableRecoverPartitionsCommand(
-      TableIdentifier("table_name", None))
-    comparePlans(parsed, expected)
-  }
-
-  test("alter view: add partition (not supported)") {
-    assertUnsupported(
-      """
-        |ALTER VIEW view_name ADD IF NOT EXISTS PARTITION
-        |(dt='2008-08-08', country='us') PARTITION
-        |(dt='2009-09-09', country='uk')
-      """.stripMargin)
-  }
-
-  test("alter table: rename partition") {
-    val sql =
-      """
-       |ALTER TABLE table_name PARTITION (dt='2008-08-08', country='us')
-       |RENAME TO PARTITION (dt='2008-09-09', country='uk')
-      """.stripMargin
-    val parsed = parser.parsePlan(sql)
-    val expected = AlterTableRenamePartitionCommand(
-      TableIdentifier("table_name", None),
-      Map("dt" -> "2008-08-08", "country" -> "us"),
-      Map("dt" -> "2008-09-09", "country" -> "uk"))
-    comparePlans(parsed, expected)
   }
 
   test("alter table: exchange partition (not supported)") {
@@ -631,45 +398,6 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
        |ALTER TABLE table_name_1 EXCHANGE PARTITION
        |(dt='2008-08-08', country='us') WITH TABLE table_name_2
       """.stripMargin)
-  }
-
-  // ALTER TABLE table_name DROP [IF EXISTS] PARTITION spec1[, PARTITION spec2, ...]
-  // ALTER VIEW table_name DROP [IF EXISTS] PARTITION spec1[, PARTITION spec2, ...]
-  test("alter table/view: drop partitions") {
-    val sql1_table =
-      """
-       |ALTER TABLE table_name DROP IF EXISTS PARTITION
-       |(dt='2008-08-08', country='us'), PARTITION (dt='2009-09-09', country='uk')
-      """.stripMargin
-    val sql2_table =
-      """
-       |ALTER TABLE table_name DROP PARTITION
-       |(dt='2008-08-08', country='us'), PARTITION (dt='2009-09-09', country='uk')
-      """.stripMargin
-    val sql1_view = sql1_table.replace("TABLE", "VIEW")
-    val sql2_view = sql2_table.replace("TABLE", "VIEW")
-
-    val parsed1_table = parser.parsePlan(sql1_table)
-    val parsed2_table = parser.parsePlan(sql2_table)
-    val parsed1_purge = parser.parsePlan(sql1_table + " PURGE")
-    assertUnsupported(sql1_view)
-    assertUnsupported(sql2_view)
-
-    val tableIdent = TableIdentifier("table_name", None)
-    val expected1_table = AlterTableDropPartitionCommand(
-      tableIdent,
-      Seq(
-        Map("dt" -> "2008-08-08", "country" -> "us"),
-        Map("dt" -> "2009-09-09", "country" -> "uk")),
-      ifExists = true,
-      purge = false,
-      retainData = false)
-    val expected2_table = expected1_table.copy(ifExists = false)
-    val expected1_purge = expected1_table.copy(purge = true)
-
-    comparePlans(parsed1_table, expected1_table)
-    comparePlans(parsed2_table, expected2_table)
-    comparePlans(parsed1_purge, expected1_purge)
   }
 
   test("alter table: archive partition (not supported)") {
@@ -686,46 +414,6 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
     assertUnsupported(
       "ALTER TABLE table_name PARTITION (dt='2008-08-08', country='us') " +
         "SET FILEFORMAT PARQUET")
-  }
-
-  test("alter table: set partition location") {
-    val sql2 = "ALTER TABLE table_name PARTITION (dt='2008-08-08', country='us') " +
-      "SET LOCATION 'new location'"
-    val parsed2 = parser.parsePlan(sql2)
-    val tableIdent = TableIdentifier("table_name", None)
-    val expected2 = AlterTableSetLocationCommand(
-      tableIdent,
-      Some(Map("dt" -> "2008-08-08", "country" -> "us")),
-      "new location")
-    comparePlans(parsed2, expected2)
-  }
-
-  test("alter table: change column name/type/comment") {
-    val sql1 = "ALTER TABLE table_name CHANGE COLUMN col_old_name col_new_name INT"
-    val sql2 = "ALTER TABLE table_name CHANGE COLUMN col_name col_name INT COMMENT 'new_comment'"
-    val parsed1 = parser.parsePlan(sql1)
-    val parsed2 = parser.parsePlan(sql2)
-    val tableIdent = TableIdentifier("table_name", None)
-    val expected1 = AlterTableChangeColumnCommand(
-      tableIdent,
-      "col_old_name",
-      StructField("col_new_name", IntegerType))
-    val expected2 = AlterTableChangeColumnCommand(
-      tableIdent,
-      "col_name",
-      StructField("col_name", IntegerType).withComment("new_comment"))
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
-  }
-
-  test("alter table: change column position (not supported)") {
-    assertUnsupported("ALTER TABLE table_name CHANGE COLUMN col_old_name col_new_name INT FIRST")
-    assertUnsupported(
-      "ALTER TABLE table_name CHANGE COLUMN col_old_name col_new_name INT AFTER other_col")
-  }
-
-  test("alter table: change column in partition spec") {
-    assertUnsupported("ALTER TABLE table_name PARTITION (a='1', a='2') CHANGE COLUMN a new_a INT")
   }
 
   test("alter table: touch (not supported)") {
@@ -771,15 +459,6 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
       """.stripMargin)
   }
 
-  test("show tblproperties") {
-    val parsed1 = parser.parsePlan("SHOW TBLPROPERTIES tab1")
-    val expected1 = ShowTablePropertiesCommand(TableIdentifier("tab1", None), None)
-    val parsed2 = parser.parsePlan("SHOW TBLPROPERTIES tab1('propKey1')")
-    val expected2 = ShowTablePropertiesCommand(TableIdentifier("tab1", None), Some("propKey1"))
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
-  }
-
   test("SPARK-14383: DISTRIBUTE and UNSET as non-keywords") {
     val sql = "SELECT distribute, unset FROM x"
     val parsed = parser.parsePlan(sql)
@@ -807,27 +486,6 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
         "SHOW PARTITIONS dbx.tab1 PARTITION (a='1', b)")
     }.getMessage
     assert(e.contains("Found an empty partition key 'b'"))
-  }
-
-  test("show columns") {
-    val sql1 = "SHOW COLUMNS FROM t1"
-    val sql2 = "SHOW COLUMNS IN db1.t1"
-    val sql3 = "SHOW COLUMNS FROM t1 IN db1"
-    val sql4 = "SHOW COLUMNS FROM db1.t1 IN db2"
-
-    val parsed1 = parser.parsePlan(sql1)
-    val expected1 = ShowColumnsCommand(None, TableIdentifier("t1", None))
-    val parsed2 = parser.parsePlan(sql2)
-    val expected2 = ShowColumnsCommand(None, TableIdentifier("t1", Some("db1")))
-    val parsed3 = parser.parsePlan(sql3)
-    val expected3 = ShowColumnsCommand(Some("db1"), TableIdentifier("t1", None))
-    val parsed4 = parser.parsePlan(sql4)
-    val expected4 = ShowColumnsCommand(Some("db2"), TableIdentifier("t1", Some("db1")))
-
-    comparePlans(parsed1, expected1)
-    comparePlans(parsed2, expected2)
-    comparePlans(parsed3, expected3)
-    comparePlans(parsed4, expected4)
   }
 
   test("Test CTAS #1") {
@@ -1058,7 +716,7 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
     assertError("select interval '23:61:15' hour to second",
       "minute 61 outside range [0, 59]")
     assertError("select interval '.1111111111' second",
-      "nanosecond 1111111111 outside range")
+      "'.1111111111' is out of range")
   }
 
   test("use native json_tuple instead of hive's UDTF in LATERAL VIEW") {
@@ -1314,125 +972,83 @@ class DDLParserSuite extends AnalysisTest with SharedSparkSession {
     assert(desc.comment == Some("no comment"))
   }
 
-  test("create view -- basic") {
-    val v1 = "CREATE VIEW view1 AS SELECT * FROM tab1"
-    val command = parser.parsePlan(v1).asInstanceOf[CreateViewCommand]
-    assert(!command.allowExisting)
-    assert(command.name.database.isEmpty)
-    assert(command.name.table == "view1")
-    assert(command.originalText == Some("SELECT * FROM tab1"))
-    assert(command.userSpecifiedColumns.isEmpty)
-  }
-
-  test("create view - full") {
-    val v1 =
-      """
-        |CREATE OR REPLACE VIEW view1
-        |(col1, col3 COMMENT 'hello')
-        |TBLPROPERTIES('prop1Key'="prop1Val")
-        |COMMENT 'BLABLA'
-        |AS SELECT * FROM tab1
-      """.stripMargin
-    val command = parser.parsePlan(v1).asInstanceOf[CreateViewCommand]
-    assert(command.name.database.isEmpty)
-    assert(command.name.table == "view1")
-    assert(command.userSpecifiedColumns == Seq("col1" -> None, "col3" -> Some("hello")))
-    assert(command.originalText == Some("SELECT * FROM tab1"))
-    assert(command.properties == Map("prop1Key" -> "prop1Val"))
-    assert(command.comment == Some("BLABLA"))
-  }
-
-  test("create view -- partitioned view") {
-    val v1 = "CREATE VIEW view1 partitioned on (ds, hr) as select * from srcpart"
-    intercept[ParseException] {
-      parser.parsePlan(v1)
-    }
-  }
-
-  test("create view - duplicate clauses") {
-    def createViewStatement(duplicateClause: String): String = {
-      s"""
-        |CREATE OR REPLACE VIEW view1
-        |(col1, col3 COMMENT 'hello')
-        |$duplicateClause
-        |$duplicateClause
-        |AS SELECT * FROM tab1
-      """.stripMargin
-    }
-    val sql1 = createViewStatement("COMMENT 'BLABLA'")
-    val sql2 = createViewStatement("TBLPROPERTIES('prop1Key'=\"prop1Val\")")
-    intercept(sql1, "Found duplicate clauses: COMMENT")
-    intercept(sql2, "Found duplicate clauses: TBLPROPERTIES")
-  }
-
   test("create table like") {
     val v1 = "CREATE TABLE table1 LIKE table2"
-    val (target, source, location, exists) = parser.parsePlan(v1).collect {
-      case CreateTableLikeCommand(t, s, l, allowExisting) => (t, s, l, allowExisting)
-    }.head
+    val (target, source, fileFormat, provider, properties, exists) =
+      parser.parsePlan(v1).collect {
+        case CreateTableLikeCommand(t, s, f, p, pr, e) => (t, s, f, p, pr, e)
+      }.head
     assert(exists == false)
     assert(target.database.isEmpty)
     assert(target.table == "table1")
     assert(source.database.isEmpty)
     assert(source.table == "table2")
-    assert(location.isEmpty)
+    assert(fileFormat.locationUri.isEmpty)
+    assert(provider.isEmpty)
 
     val v2 = "CREATE TABLE IF NOT EXISTS table1 LIKE table2"
-    val (target2, source2, location2, exists2) = parser.parsePlan(v2).collect {
-      case CreateTableLikeCommand(t, s, l, allowExisting) => (t, s, l, allowExisting)
-    }.head
+    val (target2, source2, fileFormat2, provider2, properties2, exists2) =
+      parser.parsePlan(v2).collect {
+        case CreateTableLikeCommand(t, s, f, p, pr, e) => (t, s, f, p, pr, e)
+      }.head
     assert(exists2)
     assert(target2.database.isEmpty)
     assert(target2.table == "table1")
     assert(source2.database.isEmpty)
     assert(source2.table == "table2")
-    assert(location2.isEmpty)
+    assert(fileFormat2.locationUri.isEmpty)
+    assert(provider2.isEmpty)
 
     val v3 = "CREATE TABLE table1 LIKE table2 LOCATION '/spark/warehouse'"
-    val (target3, source3, location3, exists3) = parser.parsePlan(v3).collect {
-      case CreateTableLikeCommand(t, s, l, allowExisting) => (t, s, l, allowExisting)
-    }.head
+    val (target3, source3, fileFormat3, provider3, properties3, exists3) =
+      parser.parsePlan(v3).collect {
+        case CreateTableLikeCommand(t, s, f, p, pr, e) => (t, s, f, p, pr, e)
+      }.head
     assert(!exists3)
     assert(target3.database.isEmpty)
     assert(target3.table == "table1")
     assert(source3.database.isEmpty)
     assert(source3.table == "table2")
-    assert(location3 == Some("/spark/warehouse"))
+    assert(fileFormat3.locationUri.map(_.toString) == Some("/spark/warehouse"))
+    assert(provider3.isEmpty)
 
-    val v4 = "CREATE TABLE IF NOT EXISTS table1 LIKE table2  LOCATION '/spark/warehouse'"
-    val (target4, source4, location4, exists4) = parser.parsePlan(v4).collect {
-      case CreateTableLikeCommand(t, s, l, allowExisting) => (t, s, l, allowExisting)
-    }.head
+    val v4 = "CREATE TABLE IF NOT EXISTS table1 LIKE table2 LOCATION '/spark/warehouse'"
+    val (target4, source4, fileFormat4, provider4, properties4, exists4) =
+      parser.parsePlan(v4).collect {
+        case CreateTableLikeCommand(t, s, f, p, pr, e) => (t, s, f, p, pr, e)
+      }.head
     assert(exists4)
     assert(target4.database.isEmpty)
     assert(target4.table == "table1")
     assert(source4.database.isEmpty)
     assert(source4.table == "table2")
-    assert(location4 == Some("/spark/warehouse"))
-  }
+    assert(fileFormat4.locationUri.map(_.toString) == Some("/spark/warehouse"))
+    assert(provider4.isEmpty)
 
-  test("load data") {
-    val v1 = "LOAD DATA INPATH 'path' INTO TABLE table1"
-    val (table, path, isLocal, isOverwrite, partition) = parser.parsePlan(v1).collect {
-      case LoadDataCommand(t, path, l, o, partition) => (t, path, l, o, partition)
-    }.head
-    assert(table.database.isEmpty)
-    assert(table.table == "table1")
-    assert(path == "path")
-    assert(!isLocal)
-    assert(!isOverwrite)
-    assert(partition.isEmpty)
+    val v5 = "CREATE TABLE IF NOT EXISTS table1 LIKE table2 USING parquet"
+    val (target5, source5, fileFormat5, provider5, properties5, exists5) =
+      parser.parsePlan(v5).collect {
+        case CreateTableLikeCommand(t, s, f, p, pr, e) => (t, s, f, p, pr, e)
+      }.head
+    assert(exists5)
+    assert(target5.database.isEmpty)
+    assert(target5.table == "table1")
+    assert(source5.database.isEmpty)
+    assert(source5.table == "table2")
+    assert(fileFormat5.locationUri.isEmpty)
+    assert(provider5 == Some("parquet"))
 
-    val v2 = "LOAD DATA LOCAL INPATH 'path' OVERWRITE INTO TABLE table1 PARTITION(c='1', d='2')"
-    val (table2, path2, isLocal2, isOverwrite2, partition2) = parser.parsePlan(v2).collect {
-      case LoadDataCommand(t, path, l, o, partition) => (t, path, l, o, partition)
-    }.head
-    assert(table2.database.isEmpty)
-    assert(table2.table == "table1")
-    assert(path2 == "path")
-    assert(isLocal2)
-    assert(isOverwrite2)
-    assert(partition2.nonEmpty)
-    assert(partition2.get.apply("c") == "1" && partition2.get.apply("d") == "2")
+    val v6 = "CREATE TABLE IF NOT EXISTS table1 LIKE table2 USING ORC"
+    val (target6, source6, fileFormat6, provider6, properties6, exists6) =
+      parser.parsePlan(v6).collect {
+        case CreateTableLikeCommand(t, s, f, p, pr, e) => (t, s, f, p, pr, e)
+      }.head
+    assert(exists6)
+    assert(target6.database.isEmpty)
+    assert(target6.table == "table1")
+    assert(source6.database.isEmpty)
+    assert(source6.table == "table2")
+    assert(fileFormat6.locationUri.isEmpty)
+    assert(provider6 == Some("ORC"))
   }
 }
