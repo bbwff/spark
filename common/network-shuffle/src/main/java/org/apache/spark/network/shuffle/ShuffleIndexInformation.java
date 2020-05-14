@@ -24,6 +24,8 @@ import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import java.nio.file.Files;
 
+import org.apache.spark.network.util.DigestUtils;
+
 /**
  * Keeps the index information for a particular map output
  * as an in-memory LongBuffer.
@@ -31,15 +33,42 @@ import java.nio.file.Files;
 public class ShuffleIndexInformation {
   /** offsets as long buffer */
   private final LongBuffer offsets;
+  private final boolean hasDigest;
+  /** digests as long buffer */
+  private final LongBuffer digests;
   private int size;
 
   public ShuffleIndexInformation(File indexFile) throws IOException {
+    ByteBuffer offsetsBuffer, digestsBuffer;
     size = (int)indexFile.length();
-    ByteBuffer buffer = ByteBuffer.allocate(size);
-    offsets = buffer.asLongBuffer();
-    try (DataInputStream dis = new DataInputStream(Files.newInputStream(indexFile.toPath()))) {
-      dis.readFully(buffer.array());
+    int offsetsSize, digestsSize;
+    if (size % 8 == 0) {
+      hasDigest = false;
+      offsetsSize = size;
+      digestsSize = 0;
+    } else {
+      hasDigest = true;
+      offsetsSize = ((size - 8 - 1) / (8 + DigestUtils.getDigestLength()) + 1) * 8;
+      digestsSize = size - offsetsSize -1;
     }
+    offsetsBuffer = ByteBuffer.allocate(offsetsSize);
+    digestsBuffer = ByteBuffer.allocate(digestsSize);
+    offsets = offsetsBuffer.asLongBuffer();
+    digests = digestsBuffer.asLongBuffer();
+    try (DataInputStream dis = new DataInputStream(Files.newInputStream(indexFile.toPath()))) {
+      dis.readFully(offsetsBuffer.array());
+      if (hasDigest) {
+        dis.readByte();
+      }
+      dis.readFully(digestsBuffer.array());
+    }
+  }
+
+  /**
+   * If this indexFile has digest
+   */
+  public boolean isHasDigest() {
+    return hasDigest;
   }
 
   /**
@@ -56,6 +85,8 @@ public class ShuffleIndexInformation {
   public ShuffleIndexRecord getIndex(int reduceId) {
     long offset = offsets.get(reduceId);
     long nextOffset = offsets.get(reduceId + 1);
-    return new ShuffleIndexRecord(offset, nextOffset - offset);
+    /** Default digest is -1L.*/
+    long digest = hasDigest ? digests.get(reduceId) : -1L;
+    return new ShuffleIndexRecord(offset, nextOffset - offset, digest);
   }
 }

@@ -1309,4 +1309,10 @@ package object config {
     .bytesConf(ByteUnit.BYTE)
     .createOptional
 
+  private[spark] val SHUFFLE_DIGEST_ENABLED =
+    ConfigBuilder("spark.shuffle.digest.enabled")
+      .internal()
+      .doc("The parameter to control whether check the transmitted data during shuffle.")
+      .booleanConf
+      .createWithDefault(false)
 }

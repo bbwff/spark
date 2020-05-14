@@ -28,6 +28,7 @@ import io.netty.channel.ChannelFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.spark.network.buffer.DigestFileSegmentManagedBuffer;
 import org.apache.spark.network.buffer.ManagedBuffer;
 import org.apache.spark.network.buffer.NioManagedBuffer;
 import org.apache.spark.network.client.*;
@@ -136,9 +137,16 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
 
     if (buf != null) {
       streamManager.streamBeingSent(req.streamId);
-      respond(new StreamResponse(req.streamId, buf.size(), buf)).addListener(future -> {
-        streamManager.streamSent(req.streamId);
-      });
+      if (buf instanceof DigestFileSegmentManagedBuffer) {
+        respond(new DigestStreamResponse(req.streamId, buf.size(), buf,
+          ((DigestFileSegmentManagedBuffer) buf).getDigest())).addListener(future -> {
+          streamManager.streamSent(req.streamId);
+        });
+      } else {
+        respond(new StreamResponse(req.streamId, buf.size(), buf)).addListener(future -> {
+          streamManager.streamSent(req.streamId);
+        });
+      }
     } else {
       respond(new StreamFailure(req.streamId, String.format(
         "Stream '%s' was not found.", req.streamId)));
