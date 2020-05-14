@@ -28,6 +28,7 @@ import io.netty.channel.ChannelFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.spark.network.buffer.DigestFileSegmentManagedBuffer;
 import org.apache.spark.network.buffer.ManagedBuffer;
 import org.apache.spark.network.buffer.NioManagedBuffer;
 import org.apache.spark.network.client.*;
@@ -62,16 +63,21 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
   /** The max number of chunks being transferred and not finished yet. */
   private final long maxChunksBeingTransferred;
 
+  /** The dedicated ChannelHandler for ChunkFetchRequest messages. */
+  private final ChunkFetchRequestHandler chunkFetchRequestHandler;
+
   public TransportRequestHandler(
       Channel channel,
       TransportClient reverseClient,
       RpcHandler rpcHandler,
-      Long maxChunksBeingTransferred) {
+      Long maxChunksBeingTransferred,
+      ChunkFetchRequestHandler chunkFetchRequestHandler) {
     this.channel = channel;
     this.reverseClient = reverseClient;
     this.rpcHandler = rpcHandler;
     this.streamManager = rpcHandler.getStreamManager();
     this.maxChunksBeingTransferred = maxChunksBeingTransferred;
+    this.chunkFetchRequestHandler = chunkFetchRequestHandler;
   }
 
   @Override
@@ -97,8 +103,10 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
   }
 
   @Override
-  public void handle(RequestMessage request) {
-    if (request instanceof RpcRequest) {
+  public void handle(RequestMessage request) throws Exception {
+    if (request instanceof ChunkFetchRequest) {
+      chunkFetchRequestHandler.processFetchRequest(channel, (ChunkFetchRequest) request);
+    } else if (request instanceof RpcRequest) {
       processRpcRequest((RpcRequest) request);
     } else if (request instanceof OneWayMessage) {
       processOneWayMessage((OneWayMessage) request);
@@ -136,9 +144,16 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
 
     if (buf != null) {
       streamManager.streamBeingSent(req.streamId);
-      respond(new StreamResponse(req.streamId, buf.size(), buf)).addListener(future -> {
-        streamManager.streamSent(req.streamId);
-      });
+      if (buf instanceof DigestFileSegmentManagedBuffer) {
+        respond(new DigestStreamResponse(req.streamId, buf.size(), buf,
+          ((DigestFileSegmentManagedBuffer) buf).getDigest())).addListener(future -> {
+          streamManager.streamSent(req.streamId);
+        });
+      } else {
+        respond(new StreamResponse(req.streamId, buf.size(), buf)).addListener(future -> {
+          streamManager.streamSent(req.streamId);
+        });
+      }
     } else {
       // org.apache.spark.repl.ExecutorClassLoader.STREAM_NOT_FOUND_REGEX should also be updated
       // when the following error message is changed.

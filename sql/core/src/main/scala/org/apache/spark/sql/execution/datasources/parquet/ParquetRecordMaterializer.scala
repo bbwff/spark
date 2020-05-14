@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.execution.datasources.parquet
 
-import java.util.TimeZone
+import java.time.ZoneId
 
 import org.apache.parquet.io.api.{GroupConverter, RecordMaterializer}
 import org.apache.parquet.schema.MessageType
@@ -31,16 +31,20 @@ import org.apache.spark.sql.types.StructType
  * @param parquetSchema Parquet schema of the records to be read
  * @param catalystSchema Catalyst schema of the rows to be constructed
  * @param schemaConverter A Parquet-Catalyst schema converter that helps initializing row converters
+ * @param convertTz the optional time zone to convert to int96 data
+ * @param rebaseDateTime true if need to rebase date/timestamp from Julian to Proleptic Gregorian
+ *                       calendar
  */
 private[parquet] class ParquetRecordMaterializer(
     parquetSchema: MessageType,
     catalystSchema: StructType,
     schemaConverter: ParquetToSparkSchemaConverter,
-    convertTz: Option[TimeZone])
+    convertTz: Option[ZoneId],
+    rebaseDateTime: Boolean)
   extends RecordMaterializer[InternalRow] {
 
-  private val rootConverter =
-    new ParquetRowConverter(schemaConverter, parquetSchema, catalystSchema, convertTz, NoopUpdater)
+  private val rootConverter = new ParquetRowConverter(
+    schemaConverter, parquetSchema, catalystSchema, convertTz, rebaseDateTime, NoopUpdater)
 
   override def getCurrentRecord: InternalRow = rootConverter.currentRecord
 

@@ -17,16 +17,20 @@
 
 package org.apache.spark.network.shuffle;
 
+import java.util.Optional;
+
 /**
  * Contains offset and length of the shuffle block data.
  */
 public class ShuffleIndexRecord {
   private final long offset;
   private final long length;
+  private final Optional<Long> digest;
 
-  public ShuffleIndexRecord(long offset, long length) {
+  public ShuffleIndexRecord(long offset, long length, Optional<Long> digest) {
     this.offset = offset;
     this.length = length;
+    this.digest = digest;
   }
 
   public long getOffset() {
@@ -35,6 +39,10 @@ public class ShuffleIndexRecord {
 
   public long getLength() {
     return length;
+  }
+
+  public Optional<Long> getDigest() {
+    return digest;
   }
 }
 

@@ -22,10 +22,12 @@ import java.nio.channels.Channels
 import java.nio.file.Files
 
 import org.apache.spark.{SparkConf, SparkEnv}
-import org.apache.spark.internal.Logging
+import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.NioBufferedFileInputStream
-import org.apache.spark.network.buffer.{FileSegmentManagedBuffer, ManagedBuffer}
+import org.apache.spark.network.buffer.{DigestFileSegmentManagedBuffer, FileSegmentManagedBuffer, ManagedBuffer}
 import org.apache.spark.network.netty.SparkTransportConf
+import org.apache.spark.network.shuffle.ExecutorDiskUtils
+import org.apache.spark.network.util.{DigestUtils, LimitedInputStream}
 import org.apache.spark.shuffle.IndexShuffleBlockResolver.NOOP_REDUCE_ID
 import org.apache.spark.storage._
 import org.apache.spark.util.Utils
@@ -51,12 +53,39 @@ private[spark] class IndexShuffleBlockResolver(
 
   private val transportConf = SparkTransportConf.fromSparkConf(conf, "shuffle")
 
-  def getDataFile(shuffleId: Int, mapId: Long): File = {
-    blockManager.diskBlockManager.getFile(ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID))
+  // The digest conf for shuffle block check
+  private final val digestEnable = conf.getBoolean(config.SHUFFLE_DIGEST_ENABLED.key, false);
+  private final val digestLength = DigestUtils.getDigestLength()
+
+  def getDataFile(shuffleId: Int, mapId: Long): File = getDataFile(shuffleId, mapId, None)
+
+  /**
+   * Get the shuffle data file.
+   *
+   * When the dirs parameter is None then use the disk manager's local directories. Otherwise,
+   * read from the specified directories.
+   */
+   def getDataFile(shuffleId: Int, mapId: Long, dirs: Option[Array[String]]): File = {
+    val blockId = ShuffleDataBlockId(shuffleId, mapId, NOOP_REDUCE_ID)
+    dirs
+      .map(ExecutorDiskUtils.getFile(_, blockManager.subDirsPerLocalDir, blockId.name))
+      .getOrElse(blockManager.diskBlockManager.getFile(blockId))
   }
 
-  private def getIndexFile(shuffleId: Int, mapId: Long): File = {
-    blockManager.diskBlockManager.getFile(ShuffleIndexBlockId(shuffleId, mapId, NOOP_REDUCE_ID))
+  /**
+   * Get the shuffle index file.
+   *
+   * When the dirs parameter is None then use the disk manager's local directories. Otherwise,
+   * read from the specified directories.
+   */
+  private def getIndexFile(
+      shuffleId: Int,
+      mapId: Long,
+      dirs: Option[Array[String]] = None): File = {
+    val blockId = ShuffleIndexBlockId(shuffleId, mapId, NOOP_REDUCE_ID)
+    dirs
+      .map(ExecutorDiskUtils.getFile(_, blockManager.subDirsPerLocalDir, blockId.name))
+      .getOrElse(blockManager.diskBlockManager.getFile(blockId))
   }
 
   /**
@@ -82,12 +111,16 @@ private[spark] class IndexShuffleBlockResolver(
    * Check whether the given index and data files match each other.
    * If so, return the partition lengths in the data file. Otherwise return null.
    */
-  private def checkIndexAndDataFile(index: File, data: File, blocks: Int): Array[Long] = {
-    // the index file should have `block + 1` longs as offset.
-    if (index.length() != (blocks + 1) * 8L) {
+  private def checkIndexAndDataFile(index: File, data: File, blocks: Int, digests: Array[Long]):
+  (Array[Long], Array[Long]) = {
+    // Id digestEnable is false, the index file should have `blocks + 1` longs as offset.
+    // Otherwise, it should have a byte as flag, `blocks + 1` longs as offset and `blocks` digests
+    if ((!digestEnable && index.length() != (blocks + 1) * 8L) ||
+      (digestEnable && index.length() != blocks * (8L + digestLength) + 8L + 1L)) {
       return null
     }
     val lengths = new Array[Long](blocks)
+    val digestArr = new Array[Long](blocks)
     // Read the lengths of blocks
     val in = try {
       new DataInputStream(new NioBufferedFileInputStream(index))
@@ -108,6 +141,18 @@ private[spark] class IndexShuffleBlockResolver(
         offset = off
         i += 1
       }
+      if (digestEnable) {
+        val flag = in.readByte()
+        // the flag for digestEnable should be 1
+        if (flag != 1) {
+          return null
+        }
+        i = 0
+        while (i < blocks) {
+          digestArr(i) = in.readLong()
+          i += 1
+        }
+      }
     } catch {
       case e: IOException =>
         return null
@@ -116,8 +161,8 @@ private[spark] class IndexShuffleBlockResolver(
     }
 
     // the size of data file should match with index file
-    if (data.length() == lengths.sum) {
-      lengths
+    if (data.length() == lengths.sum && !(0 until blocks).exists(i => digests(i) != digestArr(i))) {
+      (lengths, digestArr)
     } else {
       null
     }
@@ -145,11 +190,38 @@ private[spark] class IndexShuffleBlockResolver(
       // There is only one IndexShuffleBlockResolver per executor, this synchronization make sure
       // the following check and rename are atomic.
       synchronized {
-        val existingLengths = checkIndexAndDataFile(indexFile, dataFile, lengths.length)
-        if (existingLengths != null) {
+        val digests = new Array[Long](lengths.length)
+        val dateIn = if (dataTmp != null && dataTmp.exists()) {
+          new FileInputStream(dataTmp)
+        } else {
+          null
+        }
+        Utils.tryWithSafeFinally {
+          if (digestEnable && dateIn != null) {
+            for (i <- (0 until lengths.length)) {
+              val length = lengths(i)
+              if (length == 0) {
+                digests(i) = -1L
+              } else {
+                digests(i) = DigestUtils.getDigest(new LimitedInputStream(dateIn, length))
+              }
+            }
+          }
+        } {
+          if (dateIn != null) {
+            dateIn.close()
+          }
+        }
+
+        val existingLengthsDigests =
+          checkIndexAndDataFile(indexFile, dataFile, lengths.length, digests)
+        if (existingLengthsDigests != null) {
+          val existingLengths = existingLengthsDigests._1
+          val existingDigests = existingLengthsDigests._2
           // Another attempt for the same task has already written our map outputs successfully,
           // so just use the existing partition lengths and delete our temporary map outputs.
           System.arraycopy(existingLengths, 0, lengths, 0, lengths.length)
+          System.arraycopy(existingDigests, 0, digests, 0, digests.length)
           if (dataTmp != null && dataTmp.exists()) {
             dataTmp.delete()
           }
@@ -164,6 +236,13 @@ private[spark] class IndexShuffleBlockResolver(
             for (length <- lengths) {
               offset += length
               out.writeLong(offset)
+            }
+            if (digestEnable) {
+              // we write a byte present digest enable
+              out.writeByte(1)
+              for (digest <- digests) {
+                out.writeLong(digest)
+              }
             }
           } {
             out.close()
@@ -190,7 +269,9 @@ private[spark] class IndexShuffleBlockResolver(
     }
   }
 
-  override def getBlockData(blockId: BlockId): ManagedBuffer = {
+  override def getBlockData(
+      blockId: BlockId,
+      dirs: Option[Array[String]]): ManagedBuffer = {
     val (shuffleId, mapId, startReduceId, endReduceId) = blockId match {
       case id: ShuffleBlockId =>
         (id.shuffleId, id.mapId, id.reduceId, id.reduceId + 1)
@@ -201,7 +282,7 @@ private[spark] class IndexShuffleBlockResolver(
     }
     // The block is actually going to be a range of a single map output file for this map, so
     // find out the consolidated file, then the offset within that from our index
-    val indexFile = getIndexFile(shuffleId, mapId)
+    val indexFile = getIndexFile(shuffleId, mapId, dirs)
 
     // SPARK-22982: if this FileInputStream's position is seeked forward by another piece of code
     // which is incorrectly using our file descriptor then this code will fetch the wrong offsets
@@ -210,6 +291,10 @@ private[spark] class IndexShuffleBlockResolver(
     // class of issue from re-occurring in the future which is why they are left here even though
     // SPARK-22982 is fixed.
     val channel = Files.newByteChannel(indexFile.toPath)
+    var blocks = (indexFile.length() - 8) / 8
+    if (digestEnable) {
+      blocks = (indexFile.length() - 8 - 1) / (8 + digestLength)
+    }
     channel.position(startReduceId * 8L)
     val in = new DataInputStream(Channels.newInputStream(channel))
     try {
@@ -222,11 +307,37 @@ private[spark] class IndexShuffleBlockResolver(
         throw new Exception(s"SPARK-22982: Incorrect channel position after index file reads: " +
           s"expected $expectedPosition but actual position was $actualPosition.")
       }
-      new FileSegmentManagedBuffer(
-        transportConf,
-        getDataFile(shuffleId, mapId),
-        startOffset,
-        endOffset - startOffset)
+
+      if (digestEnable) {
+        val digestValue = if (endReduceId - startReduceId == 1) {
+          channel.position(1 + (blocks + 1) * 8L + startReduceId * digestLength)
+          val digest = in.readLong()
+          val actualDigestPosition = channel.position()
+          val expectedDigestLength = 1 + (blocks + 1) * 8L + (startReduceId + 1) * digestLength
+          if (actualDigestPosition != expectedDigestLength) {
+            throw new Exception(s"SPARK-22982: Incorrect channel position after index file " +
+              s"reads: expected $expectedDigestLength but actual position was " +
+              s" $actualDigestPosition.")
+          }
+          digest
+        } else {
+          DigestUtils.getDigest(getDataFile(shuffleId, mapId, dirs), startOffset,
+            endOffset - startOffset)
+        }
+
+        new DigestFileSegmentManagedBuffer(
+          transportConf,
+          getDataFile(shuffleId, mapId, dirs),
+          startOffset,
+          endOffset - startOffset,
+          digestValue)
+      } else {
+        new FileSegmentManagedBuffer(
+          transportConf,
+          getDataFile(shuffleId, mapId, dirs),
+          startOffset,
+          endOffset - startOffset)
+      }
     } finally {
       in.close()
     }

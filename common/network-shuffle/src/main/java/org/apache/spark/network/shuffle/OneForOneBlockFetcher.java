@@ -148,6 +148,8 @@ public class OneForOneBlockFetcher {
   /** Split the shuffleBlockId and return shuffleId, mapId and reduceIds. */
   private String[] splitBlockId(String blockId) {
     String[] blockIdParts = blockId.split("_");
+    // For batch block id, the format contains shuffleId, mapId, begin reduceId, end reduceId.
+    // For single block id, the format contains shuffleId, mapId, educeId.
     if (blockIdParts.length < 4 || blockIdParts.length > 5 || !blockIdParts[0].equals("shuffle")) {
       throw new IllegalArgumentException(
         "Unexpected shuffle block id format: " + blockId);
@@ -161,6 +163,12 @@ public class OneForOneBlockFetcher {
     public void onSuccess(int chunkIndex, ManagedBuffer buffer) {
       // On receipt of a chunk, pass it upwards as a block.
       listener.onBlockFetchSuccess(blockIds[chunkIndex], buffer);
+    }
+
+    @Override
+    public void onSuccess(int chunkIndex, ManagedBuffer buffer, long digest) {
+      // On receipt of a chunk, pass it upwards as a block.
+      listener.onBlockFetchSuccess(blockIds[chunkIndex], buffer, digest);
     }
 
     @Override
@@ -241,6 +249,14 @@ public class OneForOneBlockFetcher {
     @Override
     public void onComplete(String streamId) throws IOException {
       listener.onBlockFetchSuccess(blockIds[chunkIndex], channel.closeAndRead());
+      if (!downloadFileManager.registerTempFileToClean(targetFile)) {
+        targetFile.delete();
+      }
+    }
+
+    @Override
+    public void onComplete(String streamId, long digest) throws IOException {
+      listener.onBlockFetchSuccess(blockIds[chunkIndex], channel.closeAndRead(), digest);
       if (!downloadFileManager.registerTempFileToClean(targetFile)) {
         targetFile.delete();
       }
